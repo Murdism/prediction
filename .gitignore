@@ -1,0 +1,5 @@
+checkpoints/
+logs/
+trajectory_dataset/
+waymo_scenarios/
+results/
