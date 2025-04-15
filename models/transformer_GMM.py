@@ -19,6 +19,7 @@ warnings.filterwarnings("ignore")
 from typing import Tuple, Dict, Optional, List, Union,Any
 from dataclasses import dataclass, asdict
 from utils.eval import calculate_ade,calculate_fde
+from utils.util import TrajectoryHandler
 from tqdm import tqdm
 import os
 import logging
@@ -29,6 +30,7 @@ from pathlib import Path
 class ModelConfig:
     """Configuration for the AttentionGMM model."""
     # Model architecture parameters
+    mode: Optional[str] = 'train' # predict -> set to predict to load trained model
     past_trajectory: int = 10
     future_trajectory: int = 10
     device: Optional[torch.device] = None
@@ -42,26 +44,26 @@ class ModelConfig:
     num_heads: int = 4
     num_encoder_layers: int = 3
     num_decoder_layers: int = 3
-    embedding_size: int = 128
-    dropout: float = 0.2
+    embedding_size: int = 64
+    dropout: float = 0.3
     batch_first: bool = True
     actn: str = "gelu"
     
     
 
     # GMM parameters
-    n_gaussians: int = 6
-    n_hidden: int = 64
+    n_gaussians: int = 5
+    n_hidden: int = 32
 
     # Optimizer parameters
-    lr_mul: float = 0.15
+    lr_mul: float = 0.07
     n_warmup_steps: int = 4000 #2000 #3000 #3500 #4000
     optimizer_betas: Tuple[float, float] = (0.9, 0.98)
     optimizer_eps: float = 1e-9
 
     # Early stopping parameters
-    early_stopping_patience: int = 15
-    early_stopping_delta: float = 0.01
+    early_stopping_patience: int = 5
+    early_stopping_delta: float = 0.001
 
     # logging:
     log_save_path = 'results/metrics/training_metrics'
@@ -220,6 +222,13 @@ class AttentionGMM(nn.Module):
         
         self.tracker = MetricTracker()
         
+        if self.mode == 'predict':
+            self.load_model(self.checkpoint_file)
+            # Intialize TrajectoryHandler to track history of detected objects
+            self.traj_handler = TrajectoryHandler(device='cuda')
+
+        
+        
     def _validate_config(self):
         """Validate configuration parameters."""
         if self.config.embedding_size % self.config.num_heads != 0:
@@ -240,6 +249,7 @@ class AttentionGMM(nn.Module):
         self.device = self.config.get_device()
         self.mean = self.config.mean.to(self.device)
         self.std = self.config.std.to(self.device)
+        self.mode = self.config.mode
         
     def _init_model_params(self):
         """Initialize model parameters."""
@@ -428,7 +438,7 @@ class AttentionGMM(nn.Module):
         self,
         train_dl: DataLoader,
         eval_dl: DataLoader = None,
-        epochs: int = 80,
+        epochs: int = 50,
         verbose: bool = True,
         save_path: str = 'results',
         save_model: bool = True,
@@ -513,7 +523,7 @@ class AttentionGMM(nn.Module):
                 
                 # Backward pass
                 train_loss.backward()
-                total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=10.0)
+                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5.0)
                 # print(f"Gradient Norm: {total_norm:.4f}")
                 optimizer.step_and_update_lr()
 
@@ -566,14 +576,14 @@ class AttentionGMM(nn.Module):
             # Check early stopping conditions
             phase = 'test' if eval_dl else 'train'
             current_metrics = {
-                'loss':self.tracker.get_averages(phase)['loss'],
-                'ade': self.tracker.get_averages(phase)['ade'],
-                'fde': self.tracker.get_averages(phase)['fde'],
-                'best_ade': self.tracker.get_averages(phase)['best_ade'],
-                'best_fde': self.tracker.get_averages(phase)['best_fde']
+                'loss':self.tracker.history[f'{phase}_loss'][-1],
+                'ade': self.tracker.history[f'{phase}_ade'][-1],
+                'fde': self.tracker.history[f'{phase}_fde'][-1],
+                'best_ade': self.tracker.history[f'{phase}_best_ade'][-1],
+                'best_fde': self.tracker.history[f'{phase}_best_fde'][-1]
             }
             
-            should_stop, best_metrics,found_better = self.check_early_stopping(current_metrics, verbose,stop_metric='ade')
+            should_stop,found_better = self.check_early_stopping(current_metrics, verbose,stop_metric='ade')
 
             # Save model if save_frequency reached 
             if found_better:
@@ -640,9 +650,9 @@ class AttentionGMM(nn.Module):
             # Save the model
             # checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}.pth'
             if better_metric:
-                checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}_epoch{epoch}_best_ade.pth'
+                checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}_epoch{epoch+1}_best_ade.pth'
             else:
-                checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}_epoch_{epoch}.pth'
+                checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}_epoch_{epoch+1}.pth'
             os.makedirs(save_path, exist_ok=True)
             torch.save(model_state, os.path.join(models_dir, f"{checkpoint_name}"))
             logger.info(f"Saved checkpoint to: {save_path}")
@@ -809,7 +819,7 @@ class AttentionGMM(nn.Module):
         log_normalization = -torch.log(2.0 * np.pi * sigma_x * sigma_y)
         
         return log_pi + log_normalization.expand_as(log_pi) + exponent
-    def _mdn_loss_fn(self,pi, sigma_x,sigma_y, mu_x , mu_y,targets,n_mixtures):
+    def _mdn_loss_fn(self,pi, sigma_x,sigma_y, mu_x , mu_y,targets,n_mixtures,lambda_value=0.3):
         """
         Calculate the Mixture Density Network loss using LogSumExp trick for numerical stability.
         
@@ -826,7 +836,7 @@ class AttentionGMM(nn.Module):
             torch.Tensor: Mean negative log likelihood loss
         """
 
-        
+        logger = logging.getLogger('AttentionGMM')
         # Calculate log probabilities for each mixture component
         log_probs = self._bivariate(pi, sigma_x, sigma_y, mu_x, mu_y, targets)
 
@@ -846,8 +856,21 @@ class AttentionGMM(nn.Module):
         # Check for numerical instability
         if torch.isnan(neg_log_likelihood).any():
             raise ValueError("NaN values detected in loss computation")
+        
+        # calculate entropy
+        entropy = -torch.sum(pi * torch.log(pi + 1e-8), dim=-1)
+        entropy_loss = -entropy.mean()  # minimize - entropy = maximize entropy
+        mdn_loss = torch.mean(neg_log_likelihood)
+        
+        # logger.info(f"entropy_loss:{entropy_loss}")
+        # logger.info(f"mdn loss:{mdn_loss}")
+        
+        # logger.info(f"pi [0]:{pi[0]}")
 
-        return torch.mean(neg_log_likelihood)
+        total_loss = mdn_loss + lambda_value* entropy_loss
+        # logger.info(f"total_loss:{total_loss}")
+
+        return total_loss
     def check_early_stopping(self, current_metrics: dict, verbose: bool = True, stop_metric='ade') -> Tuple[bool, dict]:
         """
         Check if training should stop based on the specified metric.
@@ -861,19 +884,22 @@ class AttentionGMM(nn.Module):
             Tuple[bool, dict]: (should_stop, best_metrics)
         """
         should_stop = True
-        logger = logging.getLogger('AttentionEMT')  # Changed from AttentionGMM to match your class
+        logger = logging.getLogger('AttentionGMM') 
 
         found_better = False
-        
         # Only check the specified metric
         if stop_metric in current_metrics and stop_metric in self.best_metrics:
             current_value = current_metrics[stop_metric]
             
             # Check if the current value is better than the best value
-            if current_value < (self.best_metrics[stop_metric] + self.config.early_stopping_delta):
+            # print(self.best_metrics[stop_metric] , type(self.best_metrics[stop_metric]),self.best_metrics[stop_metric])
+            if current_value < self.best_metrics[stop_metric]:
                 self.best_metrics[stop_metric] = current_value
                 should_stop = False
                 found_better = True
+                logger.info(f"\nImprovement in {stop_metric}! \n{self.early_stop_counter} epochs without improvements.")
+            else:
+                logger.info(f"\nNo improvement in {stop_metric} for {self.early_stop_counter} epochs.")
         
         # Update counter based on improvement
         if should_stop:
@@ -891,7 +917,7 @@ class AttentionGMM(nn.Module):
             logger.info(f"\nEarly stopping triggered after {self.early_stop_counter} epochs without improvement in {stop_metric}")
             logger.info(f"Best {stop_metric.upper()}: {self.best_metrics[stop_metric]:.4f}")
         
-        return should_stop, self.best_metrics.copy()
+        return should_stop,found_better
 
     def calculate_metrics(self,pred: torch.Tensor, target: torch.Tensor, obs_last_pos: torch.Tensor) -> Tuple[float, float]:
         """
@@ -1138,6 +1164,139 @@ class AttentionGMM(nn.Module):
         finally:
             # Restore original training mode
             super().train(training)
+
+    def predict(self, detection_msg, multi_trajectory=False):
+        """
+        Evaluate the model on live detections and generate predictions.
+
+        Args:
+            detection_msg: vision_msgs/Detection3DArray
+            multi_trajectory (bool): If True, returns top-k trajectories and weights. 
+                                    If False, only returns the most likely trajectory.
+
+        Returns:
+            highest_prob_pred, (optional) batch_trajs, batch_weights
+        """
+        if detection_msg is None:
+            raise Warning("No detection_msg provided!")
+
+        self.traj_handler.update_from_detection3d(detection_msg)
+        trajectories = self.traj_handler.get_trajectories()
+        
+        if len(trajectories) == 0:
+            return None  # No active trajectories
+
+        pred_loader = DataLoader(trajectories, batch_size=32, shuffle=False, num_workers=self.num_workers)
+
+        try:
+            super().train(False)
+            with torch.no_grad():
+                for batch in pred_loader:
+                    obs_tensor, target_tensor = batch
+
+                    # Sanity check
+                    if obs_tensor.shape[-1] != 4:
+                        raise ValueError("Input must have 4 features (pos_x, pos_y, vel_x, vel_y)")
+
+                    obs_tensor = obs_tensor.to(self.device)
+                    target_tensor = target_tensor.to(self.device)
+
+                    dec_seq_len = target_tensor.shape[1]
+                    input_norm = (obs_tensor[:, 1:, 2:] - self.mean[2:]) / self.std[2:]
+                    target_norm = (target_tensor[:, :, 2:] - self.mean[2:]) / self.std[2:]
+
+                    tgt_zeros = torch.zeros((target_tensor.shape[0], dec_seq_len, 2),
+                                            dtype=torch.float32, device=self.device)
+
+                    tgt_mask = self._generate_square_mask(
+                        dim_trg=dec_seq_len,
+                        dim_src=input_norm.shape[1],
+                        mask_type="tgt"
+                    ).to(self.device)
+
+                    pi, sigma_x, sigma_y, mu_x, mu_y = self(input_norm, tgt_zeros, tgt_mask=tgt_mask)
+
+                    mus = torch.stack((mu_x, mu_y), dim=-1)
+                    sigmas = torch.stack((sigma_x, sigma_y), dim=-1)
+
+                    highest_prob_pred, best_of_n_pred = self._sample_gmm_predictions(pi, sigmas, mus, target_norm)
+
+                    if multi_trajectory:
+                        batch_trajs, batch_weights, _, _ = self._run_cluster(mus, pi, pred_len=dec_seq_len)
+                        return highest_prob_pred, batch_trajs, batch_weights
+                    else:
+                        return highest_prob_pred
+
+        except Exception as e:
+            print(f"[predict] Error during inference: {e}")
+            raise
+    
+
+    # def predict(self, detection_msg,multi_trajectory=False):
+    #     """
+    #     Evaluate the model on test data
+    #     Args:
+    #         test_loader: DataLoader for test data
+    #         ckpt_path: Path to checkpoint file
+    #         multi_trajectory: Boolean indicating if multi_trajectory results are going got be returned 
+    #             --- True ->  return highest_prob_trajectory, trajectories,trajectory_weights
+    #             --- False ->  return highest_prob_trajectory,
+    #     """
+    #     if detection_msg is None:
+    #         raise Warning("No detection_msg!")
+    
+        
+    #     # Update the trajectories based on the detection message
+    #     self.traj_handler.update_from_detection3d(detection_msg)
+
+    #     # Get the trajectories for objects
+    #     trajectories = self.traj_handler.get_trajectories()
+    #     pred_loader = DataLoader(trajectories, batch_size=32, shuffle=False, num_workers=self.num_workers)
+
+    #     try:
+    #         super().train(False)  
+    #         with torch.no_grad():
+    #             for batch in pred_loader:
+    #                 obs_tensor_eval, target_tensor_eval = batch
+                    
+    #                 # dimension check
+    #                 assert obs_tensor_eval.shape[-1] == 4, "Expected input with 4 features (pos_x, pos_y, vel_x, vel_y)"
+                    
+    #                 obs_tensor_eval = obs_tensor_eval.to(self.device)
+    #                 target_tensor_eval = target_tensor_eval.to(self.device)
+    #                 dec_seq_len = target_tensor_eval.shape[1]
+
+    #                 input_eval = (obs_tensor_eval[:,1:,2:4] - self.mean[2:])/self.std[2:]
+    #                 updated_enq_length = input_eval.shape[1]
+    #                 target_eval = (target_tensor_eval[:,:,2:4] - self.mean[2:])/self.std[2:]
+
+    #                 tgt_eval = torch.zeros((target_eval.shape[0], dec_seq_len, 2), dtype=torch.float32, device=self.device)
+
+    #                 tgt_mask = self._generate_square_mask(
+    #                     dim_trg=dec_seq_len,
+    #                     dim_src=updated_enq_length,
+    #                     mask_type="tgt"
+    #                 ).to(self.device)
+
+    #                 pi_eval, sigma_x_eval,sigma_y_eval, mu_x_eval , mu_y_eval = self(input_eval,tgt_eval,tgt_mask = tgt_mask)
+    #                 mus_eval = torch.cat((mu_x_eval.unsqueeze(-1),mu_y_eval.unsqueeze(-1)),-1)
+    #                 sigmas_eval = torch.cat((sigma_x_eval.unsqueeze(-1),sigma_y_eval.unsqueeze(-1)),-1)
+
+    #                 # highest_prob_pred and best of n prediction
+    #                 highest_prob_pred, best_of_n_pred = self._sample_gmm_predictions(pi_eval, sigmas_eval, mus_eval,target_eval)
+                    
+    #                 if multi_trajectory:
+    #                     batch_trajs,batch_weights,best_trajs,best_weights = self._run_cluster(mus_eval,pi_eval,pred_len=dec_seq_len) 
+                        
+    #                     return highest_prob_pred, batch_trajs,batch_weights
+    #                 else:
+    #                     return highest_prob_pred
+
+
+    #     except Exception as e:
+    #         print(f"Error during evaluation: {str(e)}")
+    #         raise        
+
     def _run_cluster(self,mus, pi, threshold=0.01, pred_len=10):
         """
         Process trajectories from input data.
@@ -1393,7 +1552,12 @@ class MetricTracker:
             'train_best_fde': [], 'test_best_fde': []
         }
 
-        self.best_metrics = {'ade': float('inf'), 'epoch': 0}
+        self.best_metrics = {
+            'ade': float('inf'),
+            'fde': float('inf'),
+            'best_ade': float('inf'),
+            'best_fde': float('inf')
+        }
 
     def _init_metric_dict(self):
         """Helper to initialize metrics dictionary."""

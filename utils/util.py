@@ -22,6 +22,79 @@ import torch
 
 prediction_horizon = 1
 
+import torch
+
+import torch
+
+
+class TrajectoryHandler:
+    def __init__(self, max_objects=10, max_length=15, max_inactive=3, device='cuda'):
+        self.max_length = max_length
+        self.device = device
+        self.max_inactive = max_inactive
+
+        self.trajectories = torch.zeros((max_objects, max_length, 2), device=device)
+        self.obj_id_to_index = {}
+        self.index_to_obj_id = {}
+        self.inactive_counters = {}  # New: tracks inactivity
+        self.next_index = 0
+
+    def update(self, detections):
+        updated_ids = set()
+        for obj_id, x, y in detections:
+            if obj_id not in self.obj_id_to_index:
+                if self.next_index >= self.trajectories.size(0):
+                    continue  # skip if max objects reached
+                self.obj_id_to_index[obj_id] = self.next_index
+                self.index_to_obj_id[self.next_index] = obj_id
+                self.inactive_counters[obj_id] = 0
+                self.next_index += 1
+
+            idx = self.obj_id_to_index[obj_id]
+            self.trajectories[idx, :-1] = self.trajectories[idx, 1:].clone()
+            self.trajectories[idx, -1] = torch.tensor([x, y], device=self.device)
+
+            updated_ids.add(obj_id)
+            self.inactive_counters[obj_id] = 0  # mark as active
+
+        # Increment inactive counters for non-updated IDs
+        for obj_id in list(self.obj_id_to_index.keys()):
+            if obj_id not in updated_ids:
+                self.inactive_counters[obj_id] += 1
+                if self.inactive_counters[obj_id] > self.max_inactive:
+                    self.remove_object(obj_id)
+
+    def update_from_detection3d(self, detection_msg):
+        detections = []
+        for detection in detection_msg.detections:
+            if not detection.results:
+                continue
+            obj_id = int(detection.results[0].hypothesis.class_id)
+            x = detection.bbox.center.position.x
+            y = detection.bbox.center.position.y
+            detections.append((obj_id, x, y))
+        self.update(detections)
+
+    def remove_object(self, obj_id):
+        idx = self.obj_id_to_index[obj_id]
+        self.trajectories[idx] = 0  # optional: reset data
+        del self.obj_id_to_index[obj_id]
+        del self.index_to_obj_id[idx]
+        del self.inactive_counters[obj_id]
+
+    def get_trajectories(self, obj_ids=None):
+        """
+        Returns a (N, 15, 2) tensor of active trajectories
+        - If obj_ids is None: returns all active trajectories
+        - Else: returns selected active ones only
+        """
+        if obj_ids is None:
+            obj_ids = [obj_id for obj_id in self.obj_id_to_index.keys() if self.inactive_counters[obj_id] == 0]
+        
+        valid_obj_ids = [obj_id for obj_id in obj_ids if obj_id in self.obj_id_to_index and self.inactive_counters[obj_id] == 0]
+        indices = [self.obj_id_to_index[obj_id] for obj_id in valid_obj_ids]
+        return self.trajectories[indices]
+
 
 def bbox_to_xy(bbox):
     """

@@ -101,12 +101,12 @@ if __name__ == '__main__':
     p.add_argument('--data_folder', type=str, required=True, help='Path to the trajectory dataset')
     p.add_argument('--past_trajectory', type=int, default=15, help='Number of past timesteps')
     p.add_argument('--future_trajectory', type=int, default=30, help='Number of future timesteps to predict')
-    p.add_argument('--window_size', type=int, default=1, help='Sliding window size')
+    p.add_argument('--window_size', type=int, default=3, help='Sliding window size')
     p.add_argument('--setting', type=str, default='insspect', choices=['train', 'evaluate', 'inspect'], help='Execution mode')
     p.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint file')
     p.add_argument('--num_workers', type=int, default=4, help='Number of workers for dataloader')
     p.add_argument('--normalize', type=bool, default=False, help='Normalize data')
-    p.add_argument('--batch_size', type=int, default=32, help='Batch size')
+    p.add_argument('--batch_size', type=int, default=128, help='Batch size')
     p.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to run the model')
     p.add_argument('--seed', type=int, default=42, help='Seed for reproducibility')
     p.add_argument('--save_path', type=str, default='checkpoints', help='Path to save model checkpoints')
@@ -169,10 +169,10 @@ if __name__ == '__main__':
         os.makedirs(args.save_path, exist_ok=True)
         
         # Train the model
-        predictor.train(train_loader, val_loader, save_path=args.save_path)
+        predictor.train(train_loader, val_loader, save_path=args.save_path,epochs=40)
         
         # Evaluate on test set
-        predictor.evaluate(test_loader)
+        # predictor.evaluate(test_loader)
         
     elif args.setting == 'evaluate':
         assert args.checkpoint is not None, "Checkpoint file is required for evaluation"

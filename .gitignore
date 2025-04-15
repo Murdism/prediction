@@ -3,3 +3,5 @@ logs/
 trajectory_dataset/
 waymo_scenarios/
 results/
+# Python bytecode files
+*/__pycache__/*
