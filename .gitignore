@@ -5,3 +5,4 @@ waymo_scenarios/
 results/
 # Python bytecode files
 */__pycache__/*
+test.py
