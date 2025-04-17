@@ -17,3 +17,8 @@ if __name__ == '__main__':
 
 
     predictor = AttentionGMM(saving_checkpoint_path=args.checkpoint,device=args.device, mode='predict')
+
+    # get detection_msg from ROS topic
+
+
+    predictor.predict(detection_msg)

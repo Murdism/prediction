@@ -15,7 +15,7 @@ from utils.util import set_seeds
 from utils.trajectory_dataset import TrajectoryDataset, get_data_loaders
 from models.transformer_GMM import AttentionGMM
 
-def create_predictor(past_trajectory, future_trajectory, device, normalize, checkpoint_file, win_size):
+def create_predictor(past_trajectory, future_trajectory, device, normalize, checkpoint_file, win_size,lambda_value):
     """
     Initializes and returns the Transformer-GMM model
     
@@ -35,7 +35,8 @@ def create_predictor(past_trajectory, future_trajectory, device, normalize, chec
                         future_trajectory=future_trajectory, 
                         device=device, 
                         normalize=normalize,
-                        win_size=win_size)
+                        win_size=win_size,
+                        lambda_value=lambda_value)
 
 def inspect_dataset(data_folder):
     """
@@ -101,8 +102,8 @@ if __name__ == '__main__':
     p.add_argument('--data_folder', type=str, required=True, help='Path to the trajectory dataset')
     p.add_argument('--past_trajectory', type=int, default=15, help='Number of past timesteps')
     p.add_argument('--future_trajectory', type=int, default=30, help='Number of future timesteps to predict')
-    p.add_argument('--window_size', type=int, default=3, help='Sliding window size')
-    p.add_argument('--setting', type=str, default='insspect', choices=['train', 'evaluate', 'inspect'], help='Execution mode')
+    p.add_argument('--window_size', type=int, default=6, help='Sliding window size')
+    p.add_argument('--setting', type=str, default='inspect', choices=['train', 'evaluate', 'inspect'], help='Execution mode')
     p.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint file')
     p.add_argument('--num_workers', type=int, default=4, help='Number of workers for dataloader')
     p.add_argument('--normalize', type=bool, default=False, help='Normalize data')
@@ -111,6 +112,7 @@ if __name__ == '__main__':
     p.add_argument('--seed', type=int, default=42, help='Seed for reproducibility')
     p.add_argument('--save_path', type=str, default='checkpoints', help='Path to save model checkpoints')
     p.add_argument('--verbose', type=bool, default=True, help='Print detailed information')
+    p.add_argument('--lambda_value',type=float , default= 0.0, help = "lose entropy weight" )
 
     args = p.parse_args()
     
@@ -160,7 +162,8 @@ if __name__ == '__main__':
         device=args.device,
         normalize=args.normalize,
         checkpoint_file=args.checkpoint,
-        win_size=args.window_size
+        win_size=args.window_size,
+        lambda_value=args.lambda_value
     )
     
     # Train or evaluate the model

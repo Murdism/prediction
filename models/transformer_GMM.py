@@ -37,6 +37,7 @@ class ModelConfig:
     normalize: bool = True
     saving_checkpoint_path: Optional[str] = None  # Allow user-defined checkpoint
     win_size: int = 3
+    lambda_value: Optional[float] = 0.0
     mean: torch.tensor = torch.tensor([0.0, 0.0, 0.0, 0.0])
     std: torch.tensor = torch.tensor([1.0, 1.0, 1.0, 1.0])
     in_features: int = 2
@@ -52,12 +53,12 @@ class ModelConfig:
     
 
     # GMM parameters
-    n_gaussians: int = 5
+    n_gaussians: int = 6
     n_hidden: int = 32
 
     # Optimizer parameters
-    lr_mul: float = 0.07
-    n_warmup_steps: int = 4000 #2000 #3000 #3500 #4000
+    lr_mul: float = 0.04
+    n_warmup_steps: int = 2200 #2000 #3000 #3500 #4000
     optimizer_betas: Tuple[float, float] = (0.9, 0.98)
     optimizer_eps: float = 1e-9
 
@@ -69,7 +70,7 @@ class ModelConfig:
     log_save_path = 'results/metrics/training_metrics'
 
     #eval_metrics
-    best_of_k = 5
+    best_of_k = 5 
     
 
     def __post_init__(self):
@@ -132,6 +133,11 @@ class ModelConfig:
             logger.info("-"*20)
             logger.info(f"Patience:               {self.early_stopping_patience}")
             logger.info(f"Delta:                  {self.early_stopping_delta}")
+
+            logger.info("\Loss info:")
+            logger.info("-"*20)
+            logger.info(f" Entropy loss weight (lambda_value) : {self.lambda_value}")
+            
             
             logger.info("\nDevice Configuration:")
             logger.info("-"*20)
@@ -274,6 +280,9 @@ class AttentionGMM(nn.Module):
         self.log_save_path = self.config.log_save_path
         self.checkpoint_file = self.config.saving_checkpoint_path
         self.best_of_k = self.config.best_of_k
+
+        # loss 
+        self.lambda_value = self.config.lambda_value
     
     def _init_optimizer_params(self):
         # Store optimizer parameters
@@ -584,7 +593,10 @@ class AttentionGMM(nn.Module):
             }
             
             should_stop,found_better = self.check_early_stopping(current_metrics, verbose,stop_metric='ade')
-
+            
+            if should_stop:
+                logger.info(f"Stoped training -> Early stoping! ade has not improved in {self.config.early_stopping_patience} epochs!.")
+                break
             # Save model if save_frequency reached 
             if found_better:
                 self._save_checkpoint(optimizer, epoch,save_model,1,save_path,better_metric=True)
@@ -650,9 +662,9 @@ class AttentionGMM(nn.Module):
             # Save the model
             # checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}.pth'
             if better_metric:
-                checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}_epoch{epoch+1}_best_ade.pth'
+                checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}_epoch{epoch+1}_lambda_{self.lambda_value}_best_ade.pth'
             else:
-                checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}_epoch_{epoch+1}.pth'
+                checkpoint_name = f'GMM_transformer_P_{self.past_trajectory}_F_{self.future_trajectory}_Warm_{self.n_warmup_steps}_W_{self.config.win_size}_lambda_{self.lambda_value}_epoch_{epoch+1}.pth'
             os.makedirs(save_path, exist_ok=True)
             torch.save(model_state, os.path.join(models_dir, f"{checkpoint_name}"))
             logger.info(f"Saved checkpoint to: {save_path}")
@@ -819,7 +831,7 @@ class AttentionGMM(nn.Module):
         log_normalization = -torch.log(2.0 * np.pi * sigma_x * sigma_y)
         
         return log_pi + log_normalization.expand_as(log_pi) + exponent
-    def _mdn_loss_fn(self,pi, sigma_x,sigma_y, mu_x , mu_y,targets,n_mixtures,lambda_value=0.3):
+    def _mdn_loss_fn(self,pi, sigma_x,sigma_y, mu_x , mu_y,targets,n_mixtures):
         """
         Calculate the Mixture Density Network loss using LogSumExp trick for numerical stability.
         
@@ -867,7 +879,7 @@ class AttentionGMM(nn.Module):
         
         # logger.info(f"pi [0]:{pi[0]}")
 
-        total_loss = mdn_loss + lambda_value* entropy_loss
+        total_loss = mdn_loss +  self.lambda_value* entropy_loss
         # logger.info(f"total_loss:{total_loss}")
 
         return total_loss
@@ -898,14 +910,14 @@ class AttentionGMM(nn.Module):
                 should_stop = False
                 found_better = True
                 logger.info(f"\nImprovement in {stop_metric}! \n{self.early_stop_counter} epochs without improvements.")
-            else:
-                logger.info(f"\nNo improvement in {stop_metric} for {self.early_stop_counter} epochs.")
         
         # Update counter based on improvement
         if should_stop:
             self.early_stop_counter += 1
             if verbose and self.early_stop_counter > 0:
                 logger.info(f"\nNo improvement in {stop_metric} for {self.early_stop_counter} epochs.")
+                logger.info(f"Best {stop_metric.upper()}: {self.best_metrics[stop_metric]:.4f}")
+                
         else:
             self.early_stop_counter = 0
         
