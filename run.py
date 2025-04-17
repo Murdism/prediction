@@ -181,5 +181,5 @@ if __name__ == '__main__':
         assert args.checkpoint is not None, "Checkpoint file is required for evaluation"
         
         # Evaluate the model
-        metrics = predictor.evaluate(test_loader)
-        print(f"Test metrics: {metrics}")
+        preds,weights = predictor.evaluate(test_loader)
+        print(f"pred: {len(weights), len(preds[0][0])}")

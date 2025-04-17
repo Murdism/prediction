@@ -931,9 +931,9 @@ class AttentionGMM(nn.Module):
         
         return should_stop,found_better
 
-    def calculate_metrics(self,pred: torch.Tensor, target: torch.Tensor, obs_last_pos: torch.Tensor) -> Tuple[float, float]:
+    def denormalize_to_absolute(self,pred: torch.Tensor, target: torch.Tensor, obs_last_pos: torch.Tensor):
         """
-        Calculate ADE and FDE for predictions
+       Denormalize and change to absolute positions
         Args:
             pred: predicted velocities [batch, seq_len, 2]
             target: target velocities [batch, seq_len, 2]
@@ -950,6 +950,22 @@ class AttentionGMM(nn.Module):
         # Convert velocities to absolute positions through cumsum
         pred_pos = pred.cpu().numpy().cumsum(1) + obs_last_pos.cpu().numpy()
         target_pos = target.cpu().numpy().cumsum(1) + obs_last_pos.cpu().numpy()
+
+        return pred_pos,target_pos
+    def calculate_metrics(self,pred: torch.Tensor, target: torch.Tensor, obs_last_pos: torch.Tensor) -> Tuple[float, float]:
+        """
+        Calculate ADE and FDE for predictions
+        Args:
+            pred: predicted velocities [batch, seq_len, 2]
+            target: target velocities [batch, seq_len, 2]
+            obs_last_pos: last observed position [batch, 1, 2]
+            mean: mean values for denormalization
+            std: standard deviation values for denormalization
+            device: computation device
+        """
+        
+        # Convert velocities to absolute positions through cumsum
+        pred_pos,target_pos = self.denormalize_to_absolute(pred, target, obs_last_pos)
         
         # Calculate metrics
         ade = calculate_ade(pred_pos, target_pos.tolist())
@@ -1107,6 +1123,9 @@ class AttentionGMM(nn.Module):
             # logger.info(f"Starting evaluation on {len(test_loader)} batches")
             num_evaluated = 0
             load_test = tqdm(test_loader)
+
+            preds = []
+            weights = []
             
             with torch.no_grad():
                 for batch in load_test:
@@ -1138,6 +1157,11 @@ class AttentionGMM(nn.Module):
                     # highest_prob_pred and best of n prediction
                     highest_prob_pred, best_of_n_pred = self._sample_gmm_predictions(pi_eval, sigmas_eval, mus_eval,target_eval)
                     batch_trajs,batch_weights,best_trajs,best_weights = self._run_cluster(mus_eval,pi_eval,pred_len=dec_seq_len) 
+
+                    pred_pos,target_pos = self.denormalize_to_absolute()
+
+                    preds.append(batch_trajs)
+                    weights.append(batch_weights)
                     
                     
                     # Calculate metrics
@@ -1176,6 +1200,8 @@ class AttentionGMM(nn.Module):
         finally:
             # Restore original training mode
             super().train(training)
+        
+        return preds,weights
 
     def predict(self, detection_msg, multi_trajectory=False):
         """
@@ -1242,6 +1268,8 @@ class AttentionGMM(nn.Module):
         except Exception as e:
             print(f"[predict] Error during inference: {e}")
             raise
+        
+       
     
 
     # def predict(self, detection_msg,multi_trajectory=False):

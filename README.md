@@ -5,9 +5,9 @@ trajectory prediction
 
 ## Quick Train
 
-- To train or evaluate model on a dataset use run.py 
+- To train model on a dataset use run.py 
 ```bash
-python run.py --data_folder trajectory_dataset --setting train
+python run.py --data_folder trajectory_dataset --setting train --lambda_value 0.0
 ```
 - To train on your own by importing the model use the following code
 ```python
@@ -29,7 +29,11 @@ predictor.train(train_loader, val_loader, save_path=args.save_path)
 predictor.evaluate(test_loader)
 ```
 
+- To evaluate the model:
 
+```bash
+python run.py --data_folder trajectory_dataset --setting evaluate --checkpoint pretrained/best_GMM_transformer_P_15_F_30_Warm_2200_W_6_epoch11_lambda_0.0_best_ade.pth
+ ```
 - To use it directly to predict use the following:
 
 
