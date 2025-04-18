@@ -950,7 +950,7 @@ class AttentionGMM(nn.Module):
         # Convert velocities to absolute positions through cumsum
         pred_pos = pred.cpu().numpy().cumsum(1) + obs_last_pos.cpu().numpy()
         target_pos = target.cpu().numpy().cumsum(1) + obs_last_pos.cpu().numpy()
-
+        
         return pred_pos,target_pos
     def calculate_metrics(self,pred: torch.Tensor, target: torch.Tensor, obs_last_pos: torch.Tensor) -> Tuple[float, float]:
         """
@@ -1126,6 +1126,7 @@ class AttentionGMM(nn.Module):
 
             preds = []
             weights = []
+            obs = []
             
             with torch.no_grad():
                 for batch in load_test:
@@ -1158,15 +1159,19 @@ class AttentionGMM(nn.Module):
                     highest_prob_pred, best_of_n_pred = self._sample_gmm_predictions(pi_eval, sigmas_eval, mus_eval,target_eval)
                     batch_trajs,batch_weights,best_trajs,best_weights = self._run_cluster(mus_eval,pi_eval,pred_len=dec_seq_len) 
 
-                    pred_pos,target_pos = self.denormalize_to_absolute()
-
-                    preds.append(batch_trajs)
-                    weights.append(batch_weights)
                     
                     
                     # Calculate metrics
                     eval_loss = self._mdn_loss_fn(pi_eval, sigma_x_eval,sigma_y_eval, mu_x_eval , mu_y_eval,target_eval,self.num_gaussians)
                     eval_obs_last_pos = obs_tensor_eval[:, -1:, 0:2]
+
+
+                    pred_pos,target_pos = self.denormalize_to_absolute(highest_prob_pred,target_eval, eval_obs_last_pos)
+                    observed_traj = obs_tensor_eval[:, 0:2]
+
+                    preds.append(pred_pos)
+                    weights.append(target_pos)
+                    obs.append(observed_traj)
 
                     
 
@@ -1201,7 +1206,7 @@ class AttentionGMM(nn.Module):
             # Restore original training mode
             super().train(training)
         
-        return preds,weights
+        return preds,weights,obs
 
     def predict(self, detection_msg, multi_trajectory=False):
         """
